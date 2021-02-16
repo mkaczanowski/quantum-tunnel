@@ -4,11 +4,9 @@ mod signature;
 pub(crate) mod simulation;
 mod stdtx;
 mod tm;
-pub(crate) use msg::StdMsg;
+pub(crate) use msg::{StdMsg, MsgCreateWasmClient, MsgUpdateWasmClient, WasmHeader};
 
 pub type TMHeader = tm::TMHeader;
-pub type MsgCreateWasmClient = msg::MsgCreateWasmClient;
-pub type MsgUpdateWasmClient = msg::MsgUpdateWasmClient;
 
 pub type StdSignature = signature::StdSignature;
 pub type StdTx = stdtx::StdTx;

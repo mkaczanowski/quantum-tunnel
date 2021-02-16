@@ -2,19 +2,18 @@ use crate::config::{CosmosChainConfig, CosmosConfig};
 use crate::cosmos::crypto::{privkey_from_seed, seed_from_mnemonic};
 use crate::cosmos::types::simulation::Message;
 use crate::cosmos::types::{
-    AccountQueryResponse, DecCoin, MsgCreateWasmClient, MsgUpdateWasmClient, StdFee, StdMsg,
+    AccountQueryResponse, DecCoin, StdFee,
     StdSignature, StdTx, TMHeader, TxRpcResponse,
 };
+use crate::cosmos::types::WasmHeader;
 use crate::error::ErrorKind;
 use crate::error::ErrorKind::{MalformedResponse, UnexpectedPayload};
-use crate::substrate::types::{CreateSignedBlockWithAuthoritySet, SignedBlockWithAuthoritySet};
 use crate::utils::{generate_client_id, to_string};
 use bytes::buf::Buf;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use futures::try_join;
 use hyper::{body::aggregate, Body, Client as HClient, Method, Request};
 use log::*;
-use parse_duration::parse;
 use k256::{elliptic_curve::SecretKey, ecdsa::SigningKey};
 use k256::EncodedPoint as Secp256k1;
 use std::error::Error;
@@ -234,12 +233,12 @@ impl CosmosHandler {
     /// configuration is `Real` or `Simulation`
     /// If other side is simulation, some additional bookkeeping is done to
     /// make sure `simulation_recv_handler` gets accurate data.
-    pub async fn send_handler(
+    pub async fn send_handler<T>(
         cfg: CosmosChainConfig,
         client_id: Option<String>,
-        inchan: Receiver<SignedBlockWithAuthoritySet>,
+        inchan: Receiver<T>,
         monitoring_outchan: Sender<(bool, u64)>,
-    ) -> Result<(), String> {
+    ) -> Result<(), String> where T: WasmHeader {
         match cfg {
             CosmosChainConfig::Real(cfg) => {
                 if cfg.is_other_side_simulation {
@@ -271,8 +270,7 @@ impl CosmosHandler {
                         match result.err().unwrap() {
                             TryRecvError::Disconnected => {
                                 return Err(
-                                    "Substrate chain-data channel's input end is disconnected."
-                                        .to_string(),
+                                    format!("{} chain-data channel's input end is disconnected.", T::chain_name())
                                 );
                             }
                             _ => {}
@@ -284,17 +282,17 @@ impl CosmosHandler {
             }
         }
     }
-
+    
     /// Transforms header data received from opposite chain to
     /// light client payload and sends it to substrate light client running in
     /// cosmos chain.
     /// If client id is not passed, first payload sent would be for creating the client.
-    pub async fn chain_send_handler(
+    pub async fn chain_send_handler<T>(
         cfg: CosmosConfig,
         client_id: Option<String>,
-        inchan: Receiver<SignedBlockWithAuthoritySet>,
+        inchan: Receiver<T>,
         monitoring_outchan: Sender<(bool, u64)>,
-    ) -> Result<(), String> {
+    ) -> Result<(), String> where T: WasmHeader {
         let mut new_client = false;
         let id = if client_id.is_none() {
             new_client = true;
@@ -309,11 +307,11 @@ impl CosmosHandler {
                 match result.err().unwrap() {
                     TryRecvError::Disconnected => {
                         return Err(
-                            "Substrate chain-data channel's input end is disconnected.".to_string()
+                            format!("{} chain-data channel's input end is disconnected.", T::chain_name())
                         );
                     }
                     _ => {
-                        warn!("Did not receive any data from Substrate chain-data channel. Retrying in a second ...");
+                        warn!("Did not receive any data from {} chain-data channel. Retrying in a second ...", T::chain_name());
                         tokio::time::delay_for(core::time::Duration::new(1, 0)).await;
                         continue;
                     }
@@ -322,57 +320,33 @@ impl CosmosHandler {
                 result.unwrap()
             };
 
-            let current_height = msg.block.block.header.number;
+            let current_height = msg.height();
 
             if new_client {
                 new_client = false;
-                CosmosHandler::create_client(cfg.clone(), id.clone(), msg).await?;
+                CosmosHandler::create_client::<T>(cfg.clone(), id.clone(), msg).await?;
             } else {
-                CosmosHandler::update_client(cfg.clone(), msg, id.clone()).await?;
+                CosmosHandler::update_client::<T>(cfg.clone(), msg, id.clone()).await?;
             }
 
             if cfg.is_other_side_simulation {
                 monitoring_outchan
-                    .try_send((false, current_height as u64))
+                    .try_send((false, current_height))
                     .map_err(to_string)?;
             }
         }
     }
 
-    pub async fn create_client(
+    // celo daeamon -> relayer -> celo light client wasm thingy running in cosmos
+    pub async fn create_client<T>(
         cfg: CosmosConfig,
         client_id: String,
-        header: SignedBlockWithAuthoritySet,
-    ) -> Result<String, String> {
+        header: T,
+    ) -> Result<String, String> where T: WasmHeader {
         let (signer, _, address) =
             CosmosHandler::signer_from_seed(cfg.signer_seed.clone()).map_err(to_string)?;
 
-        let msg = MsgCreateWasmClient {
-            header: CreateSignedBlockWithAuthoritySet {
-                block: header.block,
-                authority_set: header.authority_set,
-                set_id: header.set_id,
-                max_headers_allowed_to_store: 256,
-                max_headers_allowed_between_justifications: 512,
-            },
-            address: address.clone(),
-            trusting_period: parse(&cfg.trusting_period)
-                .map_err(to_string)?
-                .as_nanos()
-                .to_string(),
-            max_clock_drift: parse(&cfg.max_clock_drift)
-                .map_err(to_string)?
-                .as_nanos()
-                .to_string(),
-            unbonding_period: parse(&cfg.unbonding_period)
-                .map_err(to_string)?
-                .as_nanos()
-                .to_string(),
-            client_id: client_id.clone(),
-            wasm_id: cfg.wasm_id,
-        };
-
-        let m = vec![serde_json::json!({"type": MsgCreateWasmClient::get_type(), "value": &msg})];
+        let m = header.to_wasm_create_msg(&cfg, address.clone(), client_id.clone()).map_err(to_string)?;
         let f = StdFee {
             gas: cfg.gas,
             amount: vec![DecCoin::from(cfg.gas_price).mul(cfg.gas as f64).to_coin()],
@@ -389,31 +363,26 @@ impl CosmosHandler {
         )
         .await
         .map_err(to_string)?;
-        info!("Substrate light client creation TxHash: {:?}", retval);
+        info!("Celo light client creation TxHash: {:?}", retval);
         Ok(client_id.clone())
     }
 
-    pub async fn update_client(
+    pub async fn update_client<T>(
         cfg: CosmosConfig,
-        header: SignedBlockWithAuthoritySet,
+        header: T,
         client_id: String,
-    ) -> Result<String, String> {
+    ) -> Result<String, String> where T: WasmHeader {
         let (signer, _, address) =
             CosmosHandler::signer_from_seed(cfg.signer_seed.clone()).map_err(to_string)?;
 
-        let msg = MsgUpdateWasmClient {
-            header,
-            address: address.clone(),
-            client_id: client_id.clone(),
-        };
+        let msgs = header.to_wasm_update_msg(address.clone(), client_id);
 
-        let msgs =
-            vec![serde_json::json!({"type": MsgUpdateWasmClient::get_type(), "value": &msg})];
         let txfee = StdFee {
             gas: cfg.gas,
             amount: vec![DecCoin::from(cfg.gas_price).mul(cfg.gas as f64).to_coin()],
         };
 
+        // this is okay (universal call)
         let retval = CosmosHandler::submit_tx(
             msgs,
             txfee,
@@ -425,7 +394,7 @@ impl CosmosHandler {
         )
         .await
         .map_err(to_string)?;
-        info!("Substrate light client updation TxHash: {:?}", retval);
+        info!("{} light client updation TxHash: {:?}", T::chain_name(), retval);
         Ok(retval)
     }
 
@@ -451,7 +420,6 @@ impl CosmosHandler {
         let signature_block = StdSignature::sign(signer, bytes_to_sign);
         tx.signatures.push(signature_block.clone());
         let wrapped_tx = serde_json::json!({"tx": &tx, "mode":"block", "account_number": &account_number.to_string(), "sequence": &sequence.to_string()});
-
         let json_bytes = serde_json::to_vec(&wrapped_tx).map_err(to_string)?;
 
         let hclient = HClient::new();

@@ -1,6 +1,8 @@
 use crate::cosmos::types::Coins;
-use crate::substrate::types::{CreateSignedBlockWithAuthoritySet, SignedBlockWithAuthoritySet};
+use crate::config::CosmosConfig;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::error::Error;
 
 pub trait StdMsg {
     fn get_type() -> String
@@ -10,9 +12,9 @@ pub trait StdMsg {
 
 /// Payload to initialize substrate light client
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct MsgCreateWasmClient {
+pub struct MsgCreateWasmClient<T> {
     pub client_id: String,
-    pub header: CreateSignedBlockWithAuthoritySet,
+    pub header: T,
     pub trusting_period: String,
     pub unbonding_period: String,
     pub max_clock_drift: String,
@@ -21,7 +23,15 @@ pub struct MsgCreateWasmClient {
     pub wasm_id: u32,
 }
 
-impl StdMsg for MsgCreateWasmClient {
+pub trait WasmHeader {
+    fn chain_name() -> &'static str;
+    fn height(&self) -> u64;
+
+    fn to_wasm_create_msg(&self, cfg: &CosmosConfig, address: String, client_id: String) -> Result<Vec<Value>, Box<dyn Error>>;
+    fn to_wasm_update_msg(&self, address: String, client_id: String) -> Vec<Value>;
+}
+
+impl<T> StdMsg for MsgCreateWasmClient<T> {
     fn get_type() -> String {
         "ibc/client/MsgCreateWasmClient".to_owned()
     }
@@ -29,13 +39,13 @@ impl StdMsg for MsgCreateWasmClient {
 
 /// Payload to update substrate light client
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct MsgUpdateWasmClient {
+pub struct MsgUpdateWasmClient<T>{
     pub client_id: String,
-    pub header: SignedBlockWithAuthoritySet,
+    pub header: T,
     pub address: String,
 }
 
-impl StdMsg for MsgUpdateWasmClient {
+impl<T> StdMsg for MsgUpdateWasmClient<T> {
     fn get_type() -> String {
         "ibc/client/MsgUpdateWasmClient".to_owned()
     }

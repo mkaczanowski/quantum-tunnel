@@ -1,0 +1,24 @@
+{
+  "celo": {
+    "real": {
+      "ws_addr": "ws://127.0.0.1:3334/",
+      "trusting_period": "720h",
+      "unbonding_period": "721h",
+      "max_clock_drift": "30s"
+    }
+  },
+  "cosmos": {
+    "real": {
+      "chain_id": "wormhole",
+      "rpc_addr": "http://localhost:26657/",
+      "lcd_addr": "http://localhost:1317/",
+      "trusting_period": "720h",
+      "unbonding_period": "721h",
+      "max_clock_drift": "30s",
+      "wasm_id": 1,
+      "gas": 90000000,
+      "gas_price": "0.25stake",
+      "default_denom": "stake"
+    }
+  }
+}
