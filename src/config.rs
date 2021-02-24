@@ -184,8 +184,12 @@ pub struct SubstrateSimulationConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CeloConfig {
-    /// address of websocket on substrate chain
+    /// address of websocket on celo chain
     pub ws_addr: String,
+    /// address of geth rpc on celo chain
+    pub rpc_addr: String,
+    /// the size of epoch on celo chain
+    pub epoch_size: u64,
     /// Bip39 seed of relayer account on cosmos chain. Does not serialize/deserialize.
     #[serde(skip)]
     pub signer_seed: String,
@@ -205,6 +209,8 @@ impl Default for CeloConfig {
     fn default() -> Self {
         Self {
             ws_addr: "ws://localhost:3334/".to_owned(),
+            rpc_addr: "http://localhost:8545".to_owned(),
+            epoch_size: 17280,
             signer_seed: "".to_owned(),
             trusting_period: "144h".to_owned(),
             unbonding_period: "504h".to_owned(),

@@ -44,13 +44,13 @@ cfg_if! {
         }
 
     } else if #[cfg(feature = "celo")] {
-        use celo_light_client::Header as CeloHeader;
+        use crate::celo::types::msg::CeloWrappedHeader;
         use crate::celo::Handler as CeloHandler;
         use crate::cosmos::types::TMHeader;
 
         async fn recv_handler(
             config: &QuantumTunnelConfig,
-            other_chain_chan_tx: crossbeam_channel::Sender<CeloHeader>,
+            other_chain_chan_tx: crossbeam_channel::Sender<CeloWrappedHeader>,
             simulation_monitoring_rx: crossbeam_channel::Receiver<(bool, u64)>
         ) -> Result<(), String> {
             CeloHandler::recv_handler(

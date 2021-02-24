@@ -2,6 +2,8 @@
   "celo": {
     "real": {
       "ws_addr": "ws://127.0.0.1:3334/",
+      "rpc_addr": "http://localhost:8545",
+      "epoch_size": 17280,
       "trusting_period": "720h",
       "unbonding_period": "721h",
       "max_clock_drift": "30s"

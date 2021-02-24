@@ -1,6 +1,7 @@
 use crate::config::{CeloChainConfig, CeloConfig};
 use crate::cosmos::types::TMHeader;
-use celo_light_client::Header as CeloHeader;
+use crate::celo::types::msg::CeloWrappedHeader;
+use crate::celo::sync::SyncClient;
 use crate::utils::to_string;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use futures::{SinkExt, StreamExt};
@@ -9,6 +10,11 @@ use std::path::Path;
 use std::string::ToString;
 use tokio_tungstenite::connect_async;
 use serde_json::{from_str, Value};
+use num::cast::ToPrimitive;
+use celo_light_client::{
+    Header as CeloHeader,
+    StateEntry
+};
 
 pub struct CeloHandler {}
 impl CeloHandler {
@@ -17,7 +23,7 @@ impl CeloHandler {
     /// configuration is `Real` or `Simulation`
     pub async fn recv_handler(
         cfg: CeloChainConfig,
-        outchan: Sender<CeloHeader>,
+        outchan: Sender<CeloWrappedHeader>,
         monitoring_inchan: Receiver<(bool, u64)>,
     ) -> Result<(), String> {
         match cfg {
@@ -41,7 +47,7 @@ impl CeloHandler {
     pub async fn simulate_recv_handler(
         test_file: String,
         should_run_till_height: u64,
-        outchan: Sender<CeloHeader>,
+        outchan: Sender<CeloWrappedHeader>,
         monitoring_inchan: Receiver<(bool, u64)>,
     ) -> Result<(), String> {
         let simulation_data =
@@ -50,6 +56,8 @@ impl CeloHandler {
         let number_of_simulated_headers = stringified_headers.len();
         for str in stringified_headers {
             let payload = from_str(str).map_err(to_string)?;
+
+            // TODO: update test files to reflect the wrapped celo header change
             outchan.try_send(payload).map_err(to_string)?;
         }
 
@@ -103,8 +111,13 @@ impl CeloHandler {
     /// Subscribes to new blocks from Websocket, and pushes CeloHeader objects into the Channel.
     pub async fn chain_recv_handler(
         cfg: CeloConfig,
-        outchan: Sender<CeloHeader>,
+        outchan: Sender<CeloWrappedHeader>,
     ) -> Result<(), String> {
+        // Fetch initial state (validators set) from remote full-node
+        info!("fetching initial state from: {}", cfg.rpc_addr.clone());
+        let initial_state_entry = get_initial_state_entry(cfg.rpc_addr.clone(), cfg.epoch_size).await.map_err(to_string)?;
+
+        // Subscribe to recieve new blocks
         let (mut socket, _) = connect_async(&cfg.ws_addr).await.map_err(to_string)?;
         info!("connected websocket to {:?}", &cfg.ws_addr);
         let subscribe_message = tokio_tungstenite::tungstenite::Message::Text(r#"{"id": 0, "method": "eth_subscribe", "params": ["newHeads"]}"#.to_string());
@@ -112,11 +125,15 @@ impl CeloHandler {
 
         async fn process_msg(
             msg: tokio_tungstenite::tungstenite::Message,
-        ) -> Result<CeloHeader, String> {
+            initial_state_entry: StateEntry,
+        ) -> Result<CeloWrappedHeader, String> {
             let msgtext = msg.to_text().map_err(to_string)?;
             let json = from_str::<Value>(msgtext).map_err(to_string)?;
             let raw_header = json["params"]["result"].to_string();
-            let header: CeloHeader = serde_json::from_slice(&raw_header.as_bytes()).map_err(to_string)?;
+            let header: CeloWrappedHeader = CeloWrappedHeader{
+                header: serde_json::from_slice(&raw_header.as_bytes()).map_err(to_string)?,
+                initial_state_entry
+            };
 
             Ok(header)
         }
@@ -124,7 +141,7 @@ impl CeloHandler {
         while let Some(msg) = socket.next().await {
             if let Ok(msg) = msg {
                 info!("Received message from celo chain: {:?}", msg);
-                match process_msg(msg.clone()).await {
+                match process_msg(msg.clone(), initial_state_entry.clone()).await {
                     Ok(celo_header) => outchan
                         .try_send(celo_header)
                         .map_err(to_string)?,
@@ -249,4 +266,26 @@ impl CeloHandler {
             }
         }
     }
+}
+
+pub async fn get_initial_state_entry(addr: String, epoch_size: u64) -> Result<StateEntry, String> {
+    info!("InitialState: Setting up client");
+    let relayer = SyncClient::new(addr.clone());
+
+    info!("InitialState: Fetch last block header");
+    let current_block_header: CeloHeader = relayer.get_block_header_by_number("latest").await.map_err(to_string)?;
+    let last_block_num = current_block_header.number.to_u64().unwrap(); // TODO
+    let last_block_num_hex: String = format!("0x{:x}", last_block_num);
+
+    info!("InitialState: Fetch current validator set for block: {}", last_block_num_hex);
+    let validators = relayer.get_current_validators(&last_block_num_hex).await.map_err(to_string)?;
+
+    Ok(
+        StateEntry {
+            validators,
+            epoch: epoch_size,
+            number: last_block_num, // TODO: this should be big int?
+            hash: current_block_header.hash().map_err(to_string)?,
+        }
+    )
 }
