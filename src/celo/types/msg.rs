@@ -1,30 +1,23 @@
 use crate::config::CosmosConfig;
+use crate::utils::prost_serialize;
 use crate::cosmos::types::{StdMsg, MsgCreateWasmClient, MsgUpdateWasmClient, WasmHeader};
-use serde::{Deserialize, Serialize};
+use crate::cosmos::proto::{
+    ibc::core::commitment::v1::MerkleRoot,
+    ibc::lightclients::wasm::v1::{ClientState, ConsensusState, Header as IbcWasmHeader},
+    ibc::core::client::v1::{MsgCreateClient, MsgUpdateClient, Height},
+};
 use celo_light_client::{
+    contract::msg::{InitMsg, ClientStateData},
     Header as CeloHeader,
     StateEntry,
     ToRlp,
 };
-use serde_json::Value;
-use parse_duration::parse;
+use serde::{Deserialize, Serialize};
 use num::cast::ToPrimitive;
+use prost::Message as ProstMessage;
+use prost_types::Any;
 use std::error::Error;
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct InitMsg {
-    pub header: Vec<u8>,
-    pub initial_state_entry: Vec<u8>,
-}
-
-// FIXME: The WASM update message can't deserialize Vec<u8> on the contract end. To me it looks
-// like a bug? especially the CreateMsg works fine with vector of bytes.
-//
-// The workaround is to serialize to RLP and then to hex string
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct UpdateMsg {
-    pub header: String,
-}
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CeloWrappedHeader {
@@ -41,38 +34,94 @@ impl WasmHeader for CeloWrappedHeader {
         self.header.number.to_u64().unwrap()
     }
 
-    fn to_wasm_create_msg(&self, cfg: &CosmosConfig, address: String, client_id:String) -> Result<Vec<Value>, Box<dyn Error>> {
-        let msg = MsgCreateWasmClient {
-            header: InitMsg {
-                header: self.header.to_rlp(),
-                initial_state_entry: self.initial_state_entry.to_rlp(),
-            },
-            address,
-            trusting_period: parse(&cfg.trusting_period)?
-                .as_nanos()
-                .to_string(),
-            max_clock_drift: parse(&cfg.max_clock_drift)?
-                .as_nanos()
-                .to_string(),
-            unbonding_period: parse(&cfg.unbonding_period)?
-                .as_nanos()
-                .to_string(),
-            client_id,
-            wasm_id: cfg.wasm_id,
+    fn to_wasm_create_msg(&self, cfg: &CosmosConfig, address: String) -> Result<Vec<Any>, Box<dyn Error>> {
+        let code_id = hex::decode(&cfg.wasm_id)?;
+
+        let client_state_data = ClientStateData {
+            max_clock_drift: parse_duration::parse(cfg.max_clock_drift.as_str())?.as_secs(),
         };
 
-        Ok(vec![serde_json::json!({"type": MsgCreateWasmClient::<Self>::get_type(), "value": &msg})])
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+
+        let client_state = ClientState {
+            data: client_state_data.to_rlp(),
+            code_id: code_id.clone(),
+            frozen: false,
+            frozen_height: None,
+            latest_height: Some(Height {
+                revision_number: 0,
+                revision_height: 0,
+            }),
+            r#type: "wasm_dummy".to_string(),
+        };
+
+        let init_msg = InitMsg {
+            header: self.header.to_rlp(),
+            initial_state_entry: self.initial_state_entry.to_rlp(),
+        };
+
+        let consensus_state = ConsensusState {
+            data: init_msg.to_rlp(),
+            code_id,
+            timestamp,
+            root: Some(MerkleRoot {
+                hash: vec![1,2,3, 4], // TODO: this is required to not be empty
+            }),
+            r#type: "wasm_dummy".to_string()
+        };
+
+        let msg = MsgCreateClient {
+            client_state: Some(Any {
+                type_url: "/ibc.lightclients.wasm.v1.ClientState".to_string(),
+                value: prost_serialize(&client_state)?,
+            }),
+            consensus_state: Some(Any {
+                type_url: "/ibc.lightclients.wasm.v1.ConsensusState".to_string(),
+                value: prost_serialize(&consensus_state)?,
+            }),
+            signer: address,
+        };
+
+        let mut serialized_msg = Vec::new();
+        msg.encode(&mut serialized_msg)?;
+
+        Ok(vec![
+            Any {
+                type_url: MsgCreateWasmClient::<Self>::get_type(),
+                value: serialized_msg,
+            }
+        ])
+
+        // TODO: what about the max_clock_drift, unbonding_period and trusting_period?
     }
 
-    fn to_wasm_update_msg(&self, address: String, client_id: String) -> Vec<Value> {
-        let msg = MsgUpdateWasmClient {
-            header: UpdateMsg {
-                header: hex::encode(self.header.to_rlp().to_owned())
-            },
-            address,
-            client_id,
+    fn to_wasm_update_msg(&self, address: String, client_id: String) -> Result<Vec<Any>, Box<dyn Error>> {
+        let header = IbcWasmHeader {
+            data: self.header.to_rlp().to_owned(),
+            height: Some(Height {
+                revision_number: 0,
+                revision_height: 0,
+            }),
+            r#type: "wasm_dummy".to_string()
         };
 
-        vec![serde_json::json!({"type": MsgUpdateWasmClient::<Self>::get_type(), "value": &msg})]
+        let msg = MsgUpdateClient {
+            client_id,
+            header: Some(Any {
+                type_url: "/ibc.lightclients.wasm.v1.Header".to_string(),
+                value: prost_serialize(&header)?,
+            }),
+            signer: address,
+        };
+
+        Ok(vec![
+            Any {
+                type_url: MsgUpdateWasmClient::<Self>::get_type(),
+                value: prost_serialize(&msg)?,
+            }
+        ])
     }
 }

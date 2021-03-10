@@ -80,7 +80,7 @@ pub struct CosmosConfig {
     /// address of cosmos websocket
     pub rpc_addr: String,
     /// address of cosmos rest service
-    pub lcd_addr: String,
+    pub grpc_addr: String,
     /// Bip39 seed of relayer account on cosmos chain. Does not serialize/deserialize.
     #[serde(skip)]
     pub signer_seed: String,
@@ -97,7 +97,7 @@ pub struct CosmosConfig {
     /// max clock drift tolerance
     pub max_clock_drift: String,
     /// identifier of the wasm blob uploaded into the wormhole module on cosmos chain.
-    pub wasm_id: u32,
+    pub wasm_id: String,
     /// Flag indicating whether opposite side is simulation. Does not serialize/deserialize.
     #[serde(skip)]
     pub is_other_side_simulation: bool,
@@ -109,7 +109,7 @@ impl Default for CosmosConfig {
         Self {
             chain_id: "<chain_id>".to_owned(),
             rpc_addr: "http://localhost:26657/".to_owned(),
-            lcd_addr: "http://localhost:1317/".to_owned(),
+            grpc_addr: "http://localhost:9090".to_owned(),
             signer_seed: "".to_owned(),
             gas: 500000,
             gas_price: "0.00025stake".to_owned(),
@@ -117,7 +117,7 @@ impl Default for CosmosConfig {
             trusting_period: "144h".to_owned(),
             unbonding_period: "504h".to_owned(),
             max_clock_drift: "30s".to_owned(),
-            wasm_id: 1,
+            wasm_id: "<wasm_id>".to_string(),
             is_other_side_simulation: false,
         }
     }

@@ -1,8 +1,7 @@
-use crate::cosmos::types::Coins;
 use crate::config::CosmosConfig;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::error::Error;
+use prost_types::Any;
 
 pub trait StdMsg {
     fn get_type() -> String
@@ -27,13 +26,13 @@ pub trait WasmHeader {
     fn chain_name() -> &'static str;
     fn height(&self) -> u64;
 
-    fn to_wasm_create_msg(&self, cfg: &CosmosConfig, address: String, client_id: String) -> Result<Vec<Value>, Box<dyn Error>>;
-    fn to_wasm_update_msg(&self, address: String, client_id: String) -> Vec<Value>;
+    fn to_wasm_create_msg(&self, cfg: &CosmosConfig, address: String) -> Result<Vec<Any>, Box<dyn Error>>;
+    fn to_wasm_update_msg(&self, address: String, client_id: String) -> Result<Vec<Any>, Box<dyn Error>>;
 }
 
 impl<T> StdMsg for MsgCreateWasmClient<T> {
     fn get_type() -> String {
-        "ibc/client/MsgCreateWasmClient".to_owned()
+        "/ibc.core.client.v1.MsgCreateClient".to_owned()
     }
 }
 
@@ -47,19 +46,6 @@ pub struct MsgUpdateWasmClient<T>{
 
 impl<T> StdMsg for MsgUpdateWasmClient<T> {
     fn get_type() -> String {
-        "ibc/client/MsgUpdateWasmClient".to_owned()
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct MsgSend {
-    pub from_address: String,
-    pub to_address: String,
-    pub amount: Coins,
-}
-
-impl StdMsg for MsgSend {
-    fn get_type() -> String {
-        "cosmos-sdk/MsgSend".to_owned()
+        "/ibc.core.client.v1.MsgUpdateClient".to_owned()
     }
 }

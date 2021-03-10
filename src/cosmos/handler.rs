@@ -1,20 +1,19 @@
 use crate::config::{CosmosChainConfig, CosmosConfig};
 use crate::cosmos::crypto::{privkey_from_seed, seed_from_mnemonic};
-use crate::cosmos::types::simulation::Message;
+use crate::cosmos::types::simulation::Message as SimMessage;
 use crate::cosmos::types::{
-    AccountQueryResponse, DecCoin, StdFee,
-    StdSignature, StdTx, TMHeader, TxRpcResponse,
+    DecCoin,
+    TMHeader,
+    std_sign_bytes
 };
 use crate::cosmos::types::WasmHeader;
 use crate::error::ErrorKind;
 use crate::error::ErrorKind::{MalformedResponse, UnexpectedPayload};
-use crate::utils::{generate_client_id, to_string};
-use bytes::buf::Buf;
+use crate::utils::{to_string, prost_serialize};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use futures::try_join;
-use hyper::{body::aggregate, Body, Client as HClient, Method, Request};
 use log::*;
-use k256::{elliptic_curve::SecretKey, ecdsa::SigningKey};
+use k256::{elliptic_curve::SecretKey, ecdsa::{SigningKey, Signature}};
 use k256::EncodedPoint as Secp256k1;
 use std::error::Error;
 use std::path::Path;
@@ -26,6 +25,20 @@ use tendermint_rpc::{WebSocketClient, SubscriptionClient, Client};
 use tendermint_rpc::query::EventType;
 use futures::StreamExt;
 use url::Url;
+use prost_types::Any;
+use signature::Signer;
+use prost::Message as ProstMessage;
+
+use crate::cosmos::proto::cosmos::tx::v1beta1::{
+    Tx, AuthInfo, Fee, ModeInfo, SignerInfo, TxBody, BroadcastTxRequest,
+    service_client::ServiceClient
+};
+use crate::cosmos::proto::cosmos::tx::v1beta1::mode_info::{Single, Sum};
+
+
+use crate::cosmos::proto::{
+    cosmos::auth::v1beta1::{BaseAccount, QueryAccountRequest, query_client::QueryClient},
+};
 
 pub struct CosmosHandler {}
 impl CosmosHandler {
@@ -80,7 +93,7 @@ impl CosmosHandler {
         let stringified_headers: Vec<&str> = simulation_data.split("\n\n").collect();
         let number_of_simulated_headers = stringified_headers.len();
         for str in stringified_headers {
-            let payload: Message = serde_json::from_str(str).map_err(to_string)?;
+            let payload: SimMessage = serde_json::from_str(str).map_err(to_string)?;
             outchan
                 .try_send((payload.header, payload.next_validators))
                 .map_err(to_string)?;
@@ -95,7 +108,7 @@ impl CosmosHandler {
                 match result.err().unwrap() {
                     TryRecvError::Empty => {
                         // Let's wait for data to appear
-                        tokio::time::delay_for(core::time::Duration::new(1, 0)).await;
+                        tokio::time::sleep(core::time::Duration::new(1, 0)).await;
                     }
                     TryRecvError::Disconnected => {
                         return Err(
@@ -144,6 +157,7 @@ impl CosmosHandler {
         let (mut client, driver) = WebSocketClient::new(tm_addr.clone())
             .await
             .map_err(to_string)?;
+
         let driver_handle = tokio::spawn(async move { driver.run().await });
 
         info!("connected websocket to {:?}", tm_addr.clone());
@@ -277,7 +291,7 @@ impl CosmosHandler {
                         }
                     }
                     // Compulsory delay of 1 second to prevent busy loop.
-                    tokio::time::delay_for(core::time::Duration::new(1, 0)).await;
+                    tokio::time::sleep(core::time::Duration::new(1, 0)).await;
                 }
             }
         }
@@ -293,10 +307,10 @@ impl CosmosHandler {
         inchan: Receiver<T>,
         monitoring_outchan: Sender<(bool, u64)>,
     ) -> Result<(), String> where T: WasmHeader {
-        let mut new_client = false;
-        let id = if client_id.is_none() {
+        let mut new_client = true;
+        let mut id = if !client_id.is_some() {
             new_client = true;
-            generate_client_id()
+            String::default()
         } else {
             client_id.unwrap()
         };
@@ -312,7 +326,7 @@ impl CosmosHandler {
                     }
                     _ => {
                         warn!("Did not receive any data from {} chain-data channel. Retrying in a second ...", T::chain_name());
-                        tokio::time::delay_for(core::time::Duration::new(1, 0)).await;
+                        tokio::time::sleep(core::time::Duration::new(1, 0)).await;
                         continue;
                     }
                 }
@@ -324,7 +338,7 @@ impl CosmosHandler {
 
             if new_client {
                 new_client = false;
-                CosmosHandler::create_client::<T>(cfg.clone(), id.clone(), msg).await?;
+                id = CosmosHandler::create_client::<T>(cfg.clone(), msg).await?;
             } else {
                 CosmosHandler::update_client::<T>(cfg.clone(), msg, id.clone()).await?;
             }
@@ -340,16 +354,17 @@ impl CosmosHandler {
     // celo daeamon -> relayer -> celo light client wasm thingy running in cosmos
     pub async fn create_client<T>(
         cfg: CosmosConfig,
-        client_id: String,
         header: T,
     ) -> Result<String, String> where T: WasmHeader {
         let (signer, _, address) =
             CosmosHandler::signer_from_seed(cfg.signer_seed.clone()).map_err(to_string)?;
 
-        let m = header.to_wasm_create_msg(&cfg, address.clone(), client_id.clone()).map_err(to_string)?;
-        let f = StdFee {
-            gas: cfg.gas,
+        let m = header.to_wasm_create_msg(&cfg, address.clone()).map_err(to_string)?;
+        let f = Fee {
             amount: vec![DecCoin::from(cfg.gas_price).mul(cfg.gas as f64).to_coin()],
+            gas_limit: cfg.gas,
+            payer: "".to_string(),
+            granter: "".to_string(),
         };
 
         let retval = CosmosHandler::submit_tx(
@@ -359,12 +374,13 @@ impl CosmosHandler {
             signer,
             address.clone(),
             cfg.chain_id.clone(),
-            cfg.lcd_addr.clone(),
+            cfg.grpc_addr.clone(),
+            true
         )
         .await
         .map_err(to_string)?;
-        info!("Celo light client creation TxHash: {:?}", retval);
-        Ok(client_id.clone())
+        info!("Celo light client creation TxHash: {:?}", retval.0);
+        Ok(retval.1)
     }
 
     pub async fn update_client<T>(
@@ -375,11 +391,13 @@ impl CosmosHandler {
         let (signer, _, address) =
             CosmosHandler::signer_from_seed(cfg.signer_seed.clone()).map_err(to_string)?;
 
-        let msgs = header.to_wasm_update_msg(address.clone(), client_id);
+        let msgs = header.to_wasm_update_msg(address.clone(), client_id).map_err(to_string)?;
 
-        let txfee = StdFee {
-            gas: cfg.gas,
+        let txfee = Fee {
             amount: vec![DecCoin::from(cfg.gas_price).mul(cfg.gas as f64).to_coin()],
+            gas_limit: cfg.gas,
+            payer: "".to_string(),
+            granter: "".to_string(),
         };
 
         // this is okay (universal call)
@@ -390,51 +408,81 @@ impl CosmosHandler {
             signer,
             address.clone(),
             cfg.chain_id.clone(),
-            cfg.lcd_addr.clone(),
+            cfg.grpc_addr.clone(),
+            false
         )
         .await
         .map_err(to_string)?;
-        info!("{} light client updation TxHash: {:?}", T::chain_name(), retval);
-        Ok(retval)
+        info!("{} light client updation TxHash: {:?}", T::chain_name(), retval.0);
+        Ok(retval.0)
     }
 
     async fn submit_tx(
-        msgs: Vec<serde_json::Value>,
-        fee: StdFee,
+        msgs: Vec<Any>,
+        fee: Fee,
         memo: String,
         signer: SigningKey,
         address: String,
         chain_id: String,
-        lcd_addr: String,
-    ) -> Result<String, String> {
-        let mut tx = StdTx {
-            msg: msgs.to_vec(),
-            fee,
-            signatures: vec![],
-            memo,
+        grpc_addr: String,
+        find_client_id: bool,
+    ) -> Result<(String, String), String> {
+        // fetch cosmos account number
+        let (account_number, sequence) =
+            CosmosHandler::get_account(address, grpc_addr.clone()).await?;
+
+        // perpare public key
+        let secret_key = SecretKey::from(&signer);
+        let public_key = Secp256k1::from_secret_key(&secret_key, true);
+        let pk_any = Any {
+            type_url: "/cosmos.crypto.secp256k1.PubKey".to_string(),
+            value: prost_serialize(&public_key.as_bytes().to_vec()).map_err(to_string)?,
         };
 
-        let (account_number, sequence) =
-            CosmosHandler::get_account(address, lcd_addr.clone()).await?;
-        let bytes_to_sign = tx.get_sign_bytes(chain_id, account_number, sequence);
-        let signature_block = StdSignature::sign(signer, bytes_to_sign);
-        tx.signatures.push(signature_block.clone());
-        let wrapped_tx = serde_json::json!({"tx": &tx, "mode":"block", "account_number": &account_number.to_string(), "sequence": &sequence.to_string()});
-        let json_bytes = serde_json::to_vec(&wrapped_tx).map_err(to_string)?;
+        // prepare Tx segments
+        let single = Single { mode: 1 };
+        let sum_single = Some(Sum::Single(single));
+        let mode = Some(ModeInfo { sum: sum_single });
 
-        let hclient = HClient::new();
-        let tx_req = Request::builder()
-            .method(Method::POST)
-            .uri(lcd_addr.clone() + &"txs".to_owned())
-            .header("content-type", "application/json")
-            .body(Body::from(json_bytes))
-            .map_err(to_string)?;
+        let tx_body = TxBody {
+            messages: msgs,
+            memo,
+            timeout_height: 0,
+            extension_options: Vec::<Any>::new(),
+            non_critical_extension_options: Vec::<Any>::new(),
+        };
 
-        // Await the response...
-        let tx_resp = hclient.request(tx_req).await.map_err(to_string)?;
-        let tx_body = aggregate(tx_resp).await.map_err(to_string)?;
-        let tx_rstr = String::from_utf8(tx_body.bytes().to_vec()).map_err(to_string)?;
-        let tx_response: TxRpcResponse = serde_json::from_str(&tx_rstr).map_err(to_string)?;
+        let auth_info = AuthInfo {
+            signer_infos: vec![
+                SignerInfo {
+                    public_key: Some(pk_any),
+                    mode_info: mode,
+                    sequence: sequence,
+                }
+            ],
+            fee: Some(fee),
+        };
+
+        // create transaction signature
+        let bytes_to_sign = std_sign_bytes(&tx_body, &auth_info, chain_id, account_number).map_err(to_string)?;
+        let signature: Signature = signer.sign(bytes_to_sign.as_slice());
+
+        let tx = Tx {
+            body: Some(tx_body),
+            auth_info: Some(auth_info),
+            signatures: vec![signature.as_ref().to_vec()],
+        };
+
+        let mut client = ServiceClient::connect(grpc_addr).await.map_err(to_string)?;
+
+        let request = tonic::Request::new(BroadcastTxRequest {
+            tx_bytes: prost_serialize(&tx).map_err(to_string)?,
+            mode: 1,
+        });
+
+        let response = client.broadcast_tx(request).await.map_err(to_string)?;
+        let tx_response = response.into_inner().tx_response.ok_or("failed to get tx_response")?;
+
         if tx_response.code != 0 {
             error!(
                 "Tx failed log: {:?} at height: {:?}",
@@ -442,26 +490,44 @@ impl CosmosHandler {
             );
             return Err(format!("Tx failed, response from node: {:?}", tx_response));
         };
-        Ok(tx_response.txhash)
+
+        let client_id = if find_client_id {
+            let event = tx_response.logs
+                .get(0).ok_or("empty event log")?
+                .events
+                .iter()
+                .find(|&event| event.r#type == "create_client")
+                .ok_or("can't find create_client event in the log")?;
+
+            let attribute = event.attributes
+                .iter()
+                .find(|attr| attr.key == "client_id")
+                .ok_or("unable to find client_id attribute")?;
+
+            attribute.value.clone()
+        } else {
+            String::default()
+        };
+
+        Ok((tx_response.txhash, client_id))
     }
 
-    async fn get_account(account: String, lcd_addr: String) -> Result<(u64, u64), String> {
-        let hclient = HClient::new();
-        let acc_req = Request::builder()
-            .method(Method::GET)
-            .uri(lcd_addr.clone() + &"auth/accounts/".to_owned() + &account)
-            .header("content-type", "application/json")
-            .body(Body::from(""))
-            .map_err(to_string)?;
+    async fn get_account(account: String, grpc_addr: String) -> Result<(u64, u64), String> {
+        let mut client = QueryClient::connect(grpc_addr).await.map_err(to_string)?;
 
-        // Await the response...
-        let acc_resp = hclient.request(acc_req).await.map_err(to_string)?;
-        let acc_body = aggregate(acc_resp).await.map_err(to_string)?;
-        let acc_rstr = String::from_utf8(acc_body.bytes().to_vec()).map_err(to_string)?;
-        let response: AccountQueryResponse = serde_json::from_str(&acc_rstr).map_err(to_string)?;
+        let request = tonic::Request::new(QueryAccountRequest {
+            address: account
+        });
+
+        let response = client.account(request).await.map_err(to_string)?;
+        let account: BaseAccount = match response.into_inner().account {
+            Some(acc) => ProstMessage::decode(acc.value.as_slice()).map_err(to_string)?,
+            None => return Err("failed to extract account from response".to_string()),
+        };
+
         Ok((
-            response.result.value.account_number,
-            response.result.value.sequence,
+            account.account_number,
+            account.sequence
         ))
     }
 }

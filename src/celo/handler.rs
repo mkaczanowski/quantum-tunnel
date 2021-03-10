@@ -70,7 +70,7 @@ impl CeloHandler {
                 match result.err().unwrap() {
                     TryRecvError::Empty => {
                         // Let's wait for data to appear
-                        tokio::time::delay_for(core::time::Duration::new(1, 0)).await;
+                        tokio::time::sleep(core::time::Duration::new(1, 0)).await;
                     }
                     TryRecvError::Disconnected => {
                         return Err(
@@ -203,7 +203,7 @@ impl CeloHandler {
                         }
                     }
                     // Compulsory delay of 1 second to not enter in busy loop.
-                    tokio::time::delay_for(core::time::Duration::new(1, 0)).await;
+                    tokio::time::sleep(core::time::Duration::new(1, 0)).await;
                 }
             }
         }
@@ -237,7 +237,7 @@ impl CeloHandler {
                     }
                     _ => {
                         warn!("Did not receive any data from Cosmos chain-data channel. Retrying in a second ...");
-                        tokio::time::delay_for(core::time::Duration::new(1, 0)).await;
+                        tokio::time::sleep(core::time::Duration::new(1, 0)).await;
                         continue;
                     }
                 }
