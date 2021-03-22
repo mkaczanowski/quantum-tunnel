@@ -12,8 +12,10 @@ use tokio_tungstenite::connect_async;
 use serde_json::{from_str, Value};
 use num::cast::ToPrimitive;
 use celo_light_client::{
+    IstanbulExtra,
     Header as CeloHeader,
-    StateEntry
+    StateEntry,
+    StateConfig
 };
 
 pub struct CeloHandler {}
@@ -113,9 +115,22 @@ impl CeloHandler {
         cfg: CeloConfig,
         outchan: Sender<CeloWrappedHeader>,
     ) -> Result<(), String> {
+        // Fetch relevant configuration
+        let state_config = StateConfig {
+            epoch_size: cfg.epoch_size,
+            allowed_clock_skew: parse_duration::parse(cfg.max_clock_drift.as_str()).map_err(to_string)?.as_secs(),
+            verify_epoch_headers: true,
+            verify_non_epoch_headers: true,
+            verify_header_timestamp: false, // doesn't work with WASM (see the flag in Celo LC code)
+        };
+
         // Fetch initial state (validators set) from remote full-node
         info!("fetching initial state from: {}", cfg.rpc_addr.clone());
-        let initial_state_entry = get_initial_state_entry(cfg.rpc_addr.clone(), cfg.epoch_size).await.map_err(to_string)?;
+        let initial_header = get_initial_header(cfg.rpc_addr.clone(), state_config).await.map_err(to_string)?;
+
+        // Send the initial header / state before others, so that contract is initialized properly
+        info!("send initial header at height: {}", initial_header.initial_state_entry.number);
+        outchan.try_send(initial_header.clone()).map_err(to_string)?;
 
         // Subscribe to recieve new blocks
         let (mut socket, _) = connect_async(&cfg.ws_addr).await.map_err(to_string)?;
@@ -123,28 +138,43 @@ impl CeloHandler {
         let subscribe_message = tokio_tungstenite::tungstenite::Message::Text(r#"{"id": 0, "method": "eth_subscribe", "params": ["newHeads"]}"#.to_string());
         socket.send(subscribe_message).await.map_err(to_string)?;
 
+        let initial_state_entry = initial_header.initial_state_entry;
+        let initial_state_config = initial_header.initial_state_config;
+
         async fn process_msg(
             msg: tokio_tungstenite::tungstenite::Message,
             initial_state_entry: StateEntry,
-        ) -> Result<CeloWrappedHeader, String> {
+            initial_state_config: StateConfig,
+        ) -> Result<Option<CeloWrappedHeader>, String> {
             let msgtext = msg.to_text().map_err(to_string)?;
             let json = from_str::<Value>(msgtext).map_err(to_string)?;
             let raw_header = json["params"]["result"].to_string();
+            let current_header: CeloHeader = serde_json::from_slice(&raw_header.as_bytes()).map_err(to_string)?;
+
+            if current_header.number.to_u64().unwrap() < initial_state_entry.number {
+                info!("recieved header height is lower than initial state height, skipping");
+                return Ok(None);
+            }
+
             let header: CeloWrappedHeader = CeloWrappedHeader{
-                header: serde_json::from_slice(&raw_header.as_bytes()).map_err(to_string)?,
-                initial_state_entry
+                header: current_header,
+                initial_state_entry,
+                initial_state_config
             };
 
-            Ok(header)
+            Ok(Some(header))
         }
 
         while let Some(msg) = socket.next().await {
             if let Ok(msg) = msg {
                 info!("Received message from celo chain: {:?}", msg);
-                match process_msg(msg.clone(), initial_state_entry.clone()).await {
-                    Ok(celo_header) => outchan
-                        .try_send(celo_header)
-                        .map_err(to_string)?,
+                match process_msg(msg.clone(), initial_state_entry.clone(), initial_state_config.clone()).await {
+                    Ok(maybe_header) => match maybe_header {
+                        Some(celo_header) => outchan
+                            .try_send(celo_header)
+                            .map_err(to_string)?,
+                        None => {},
+                    }
                     Err(err) => error!("Error: {}", err),
                 }
             }
@@ -268,24 +298,30 @@ impl CeloHandler {
     }
 }
 
-pub async fn get_initial_state_entry(addr: String, epoch_size: u64) -> Result<StateEntry, String> {
+pub async fn get_initial_header(addr: String, state_config: StateConfig) -> Result<CeloWrappedHeader, String> {
     info!("InitialState: Setting up client");
     let relayer = SyncClient::new(addr.clone());
 
     info!("InitialState: Fetch last block header");
     let current_block_header: CeloHeader = relayer.get_block_header_by_number("latest").await.map_err(to_string)?;
-    let last_block_num = current_block_header.number.to_u64().unwrap(); // TODO
+    let extra: IstanbulExtra = IstanbulExtra::from_rlp(&current_block_header.extra).map_err(to_string)?;
+    let last_block_num = current_block_header.number.to_u64().unwrap();
     let last_block_num_hex: String = format!("0x{:x}", last_block_num);
 
     info!("InitialState: Fetch current validator set for block: {}", last_block_num_hex);
     let validators = relayer.get_current_validators(&last_block_num_hex).await.map_err(to_string)?;
 
     Ok(
-        StateEntry {
-            validators,
-            epoch: epoch_size,
-            number: last_block_num, // TODO: this should be big int?
-            hash: current_block_header.hash().map_err(to_string)?,
+        CeloWrappedHeader {
+            header: current_block_header.clone(),
+            initial_state_config: state_config,
+            initial_state_entry: StateEntry {
+                validators,
+                number: last_block_num,
+                timestamp: current_block_header.time,
+                hash: current_block_header.hash().map_err(to_string)?,
+                aggregated_seal: extra.aggregated_seal,
+            }
         }
     )
 }
