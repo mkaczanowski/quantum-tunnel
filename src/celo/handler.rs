@@ -14,8 +14,10 @@ use num::cast::ToPrimitive;
 use celo_light_client::{
     IstanbulExtra,
     Header as CeloHeader,
-    StateEntry,
-    StateConfig
+    contract::types::state::{
+        LightConsensusState,
+        LightClientState
+    },
 };
 
 pub struct CeloHandler {}
@@ -116,12 +118,18 @@ impl CeloHandler {
         outchan: Sender<CeloWrappedHeader>,
     ) -> Result<(), String> {
         // Fetch relevant configuration
-        let state_config = StateConfig {
+        let state_config = LightClientState {
             epoch_size: cfg.epoch_size,
             allowed_clock_skew: parse_duration::parse(cfg.max_clock_drift.as_str()).map_err(to_string)?.as_secs(),
+            upgrade_path: Vec::new(),
+
             verify_epoch_headers: true,
             verify_non_epoch_headers: true,
-            verify_header_timestamp: false, // doesn't work with WASM (see the flag in Celo LC code)
+            verify_header_timestamp: false,
+
+            allow_update_after_expiry: true,
+            allow_update_after_misbehavior: true,
+            trusting_period: 60*60*60
         };
 
         // Fetch initial state (validators set) from remote full-node
@@ -129,7 +137,7 @@ impl CeloHandler {
         let initial_header = get_initial_header(cfg.rpc_addr.clone(), state_config).await.map_err(to_string)?;
 
         // Send the initial header / state before others, so that contract is initialized properly
-        info!("send initial header at height: {}", initial_header.initial_state_entry.number);
+        info!("send initial header at height: {}", initial_header.initial_consensus_state.number);
         outchan.try_send(initial_header.clone()).map_err(to_string)?;
 
         // Subscribe to recieve new blocks
@@ -138,28 +146,28 @@ impl CeloHandler {
         let subscribe_message = tokio_tungstenite::tungstenite::Message::Text(r#"{"id": 0, "method": "eth_subscribe", "params": ["newHeads"]}"#.to_string());
         socket.send(subscribe_message).await.map_err(to_string)?;
 
-        let initial_state_entry = initial_header.initial_state_entry;
-        let initial_state_config = initial_header.initial_state_config;
+        let initial_consensus_state = initial_header.initial_consensus_state;
+        let initial_client_state = initial_header.initial_client_state;
 
         async fn process_msg(
             msg: tokio_tungstenite::tungstenite::Message,
-            initial_state_entry: StateEntry,
-            initial_state_config: StateConfig,
+            initial_consensus_state: LightConsensusState,
+            initial_client_state: LightClientState,
         ) -> Result<Option<CeloWrappedHeader>, String> {
             let msgtext = msg.to_text().map_err(to_string)?;
             let json = from_str::<Value>(msgtext).map_err(to_string)?;
             let raw_header = json["params"]["result"].to_string();
             let current_header: CeloHeader = serde_json::from_slice(&raw_header.as_bytes()).map_err(to_string)?;
 
-            if current_header.number.to_u64().unwrap() < initial_state_entry.number {
+            if current_header.number.to_u64().unwrap() < initial_consensus_state.number {
                 info!("recieved header height is lower than initial state height, skipping");
                 return Ok(None);
             }
 
             let header: CeloWrappedHeader = CeloWrappedHeader{
                 header: current_header,
-                initial_state_entry,
-                initial_state_config
+                initial_consensus_state,
+                initial_client_state
             };
 
             Ok(Some(header))
@@ -168,7 +176,7 @@ impl CeloHandler {
         while let Some(msg) = socket.next().await {
             if let Ok(msg) = msg {
                 info!("Received message from celo chain: {:?}", msg);
-                match process_msg(msg.clone(), initial_state_entry.clone(), initial_state_config.clone()).await {
+                match process_msg(msg.clone(), initial_consensus_state.clone(), initial_client_state.clone()).await {
                     Ok(maybe_header) => match maybe_header {
                         Some(celo_header) => outchan
                             .try_send(celo_header)
@@ -298,7 +306,7 @@ impl CeloHandler {
     }
 }
 
-pub async fn get_initial_header(addr: String, state_config: StateConfig) -> Result<CeloWrappedHeader, String> {
+pub async fn get_initial_header(addr: String, state_config: LightClientState) -> Result<CeloWrappedHeader, String> {
     info!("InitialState: Setting up client");
     let relayer = SyncClient::new(addr.clone());
 
@@ -314,8 +322,8 @@ pub async fn get_initial_header(addr: String, state_config: StateConfig) -> Resu
     Ok(
         CeloWrappedHeader {
             header: current_block_header.clone(),
-            initial_state_config: state_config,
-            initial_state_entry: StateEntry {
+            initial_client_state: state_config,
+            initial_consensus_state: LightConsensusState {
                 validators,
                 number: last_block_num,
                 timestamp: current_block_header.time,

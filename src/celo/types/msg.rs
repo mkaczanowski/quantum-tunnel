@@ -9,9 +9,11 @@ use crate::cosmos::proto::{
 };
 use celo_light_client::{
     Header as CeloHeader,
-    StateEntry,
-    StateConfig,
     ToRlp,
+    contract::types::state::{
+        LightConsensusState,
+        LightClientState
+    },
 };
 use serde::{Deserialize, Serialize};
 use num::cast::ToPrimitive;
@@ -22,8 +24,8 @@ use std::error::Error;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CeloWrappedHeader {
     pub header: CeloHeader,
-    pub initial_state_entry: StateEntry,
-    pub initial_state_config: StateConfig,
+    pub initial_consensus_state: LightConsensusState,
+    pub initial_client_state: LightClientState,
 }
 
 impl WasmHeader for CeloWrappedHeader {
@@ -36,14 +38,14 @@ impl WasmHeader for CeloWrappedHeader {
     }
 
     fn to_wasm_create_msg(&self, cfg: &CosmosConfig, address: String) -> Result<Vec<Any>, Box<dyn Error>> {
-        if self.header.number.to_u64().unwrap() != self.initial_state_entry.number {
+        if self.header.number.to_u64().unwrap() != self.initial_consensus_state.number {
             return Err(Box::new(ErrorKind::Io("initial block header doesn't match initial state entry height".to_string())));
         }
 
         let code_id = hex::decode(&cfg.wasm_id)?;
         let client_state = ClientState {
             code_id: code_id.clone(),
-            data: self.initial_state_config.to_rlp(),
+            data: self.initial_client_state.to_rlp(),
             frozen: false,
             frozen_height: None,
             latest_height: Some(Height {
@@ -55,8 +57,8 @@ impl WasmHeader for CeloWrappedHeader {
 
         let consensus_state = ConsensusState {
             code_id,
-            data: self.initial_state_entry.to_rlp(),
-            timestamp: self.initial_state_entry.timestamp,
+            data: self.initial_consensus_state.to_rlp(),
+            timestamp: self.initial_consensus_state.timestamp,
             root: Some(MerkleRoot { hash: self.header.root.to_vec() }),
             r#type: "wasm_dummy".to_string()
         };
