@@ -123,13 +123,13 @@ impl CeloHandler {
             allowed_clock_skew: parse_duration::parse(cfg.max_clock_drift.as_str()).map_err(to_string)?.as_secs(),
             upgrade_path: Vec::new(),
 
-            verify_epoch_headers: true,
-            verify_non_epoch_headers: true,
-            verify_header_timestamp: false,
+            verify_epoch_headers: cfg.verify_epoch_headers,
+            verify_non_epoch_headers: cfg.verify_non_epoch_headers,
+            verify_header_timestamp: cfg.verify_header_timestamp,
 
-            allow_update_after_expiry: true,
-            allow_update_after_misbehavior: true,
-            trusting_period: 60*60*60
+            allow_update_after_expiry: cfg.allow_update_after_expiry,
+            allow_update_after_misbehavior: cfg.allow_update_after_expiry,
+            trusting_period: parse_duration::parse(cfg.trusting_period.as_str()).map_err(to_string)?.as_secs(),
         };
 
         // Fetch initial state (validators set) from remote full-node

@@ -4,8 +4,12 @@
       "ws_addr": "ws://127.0.0.1:3334/",
       "rpc_addr": "http://localhost:8545",
       "epoch_size": 17280,
+      "verify_epoch_headers": true,
+      "verify_non_epoch_headers": true,
+      "verify_header_timestamp": true,
+      "allow_update_after_expiry": true,
+      "allow_update_after_misbehavior": true,
       "trusting_period": "720h",
-      "unbonding_period": "721h",
       "max_clock_drift": "30s"
     }
   },
@@ -17,8 +21,8 @@
       "trusting_period": "720h",
       "unbonding_period": "721h",
       "max_clock_drift": "30s",
-      "wasm_id": "100c33cb61fcf466a1846e8a07fcb15b03139f7516edf3a0770542c988aea61e",
-      "gas": 90000000,
+      "wasm_id": "6af2a8fd7495562100a20233d0ebd1752bd09d36780c75181b73a72ba921fed0",
+      "gas": 10000000000,
       "gas_price": "0.25stake",
       "default_denom": "stake"
     }
