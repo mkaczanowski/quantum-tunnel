@@ -14,9 +14,17 @@
     }
   },
   "celo": {
-    "simulation": {
-      "simulation_file_path": "test_data/celo_light_client_simulated.txt",
-      "should_run_till_height": 6509407
+    "real": {
+      "ws_addr": "ws://127.0.0.1:3334/",
+      "rpc_addr": "http://localhost:8545",
+      "epoch_size": 17280,
+      "verify_epoch_headers": true,
+      "verify_non_epoch_headers": true,
+      "verify_header_timestamp": false,
+      "allow_update_after_expiry": true,
+      "allow_update_after_misbehavior": true,
+      "trusting_period": "720h",
+      "max_clock_drift": "30s"
     }
   }
 }
