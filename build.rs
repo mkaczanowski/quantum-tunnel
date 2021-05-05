@@ -1,4 +1,3 @@
-
 fn main() {
     tonic_build::configure()
         .build_server(false)
@@ -19,8 +18,9 @@ fn main() {
                 "proto/ibc/lightclients/wasm/v1/wasm.proto",
                 "proto/ibc/core/client/v1/tx.proto",
                 "proto/cosmos/auth/v1beta1/auth.proto",
-                "proto/cosmos/auth/v1beta1/query.proto"
+                "proto/cosmos/auth/v1beta1/query.proto",
             ],
             &["proto/"],
-        ).unwrap();
+        )
+        .unwrap();
 }

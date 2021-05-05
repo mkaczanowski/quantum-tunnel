@@ -766,6 +766,7 @@ checksum = "4c0496836a84f8d0495758516b8621a622beb77c0fed418570e50764093ced48"
 [[package]]
 name = "celo_light_client"
 version = "0.1.0"
+source = "git+https://github.com/ChorusOne/celo-light-client.git?branch=main#380d92b173138e8df5770df0edde66034f78bb3c"
 dependencies = [
  "algebra",
  "anomaly",

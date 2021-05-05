@@ -61,7 +61,6 @@ impl CeloHandler {
         for str in stringified_headers {
             let payload = from_str(str).map_err(to_string)?;
 
-            // TODO: update test files to reflect the wrapped celo header change
             outchan.try_send(payload).map_err(to_string)?;
         }
 
@@ -261,7 +260,7 @@ impl CeloHandler {
         // TODO: We don't have a CosmosClient (tendermint-light-client) running on the CeloBlockchain yet,
         // so this is just a stub method.
         //
-        // Cosmos[CeloLightWasm] in: Celo out: Cosmos <---> in: Cosmos, out: Celo Celo[TendermintLight?]
+        // Cosmos[CeloLightWasm] in: Celo out: Cosmos <---> in: Cosmos, out: Celo Celo[TendermintLight]
         // ^^ we implement this                             !!^^ not this
 
         loop {

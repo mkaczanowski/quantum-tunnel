@@ -296,7 +296,7 @@ impl CosmosHandler {
             }
         }
     }
-    
+
     /// Transforms header data received from opposite chain to
     /// light client payload and sends it to substrate light client running in
     /// cosmos chain.

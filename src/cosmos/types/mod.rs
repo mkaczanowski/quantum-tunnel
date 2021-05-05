@@ -7,7 +7,5 @@ pub(crate) use msg::{StdMsg, MsgCreateWasmClient, MsgUpdateWasmClient, WasmHeade
 pub type TMHeader = tm::TMHeader;
 
 pub type DecCoin = stdtx::DecCoin;
-pub type TMUpdateClientPayload = tm::TMUpdateClientPayload;
-pub type TMCreateClientPayload = tm::TMCreateClientPayload;
 
 pub use stdtx::std_sign_bytes;

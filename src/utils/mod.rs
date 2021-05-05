@@ -1,7 +1,7 @@
 pub mod from_str;
 
-use std::fmt::Display;
 use prost::Message;
+use std::fmt::Display;
 
 // Util function to convert error to string
 pub fn to_string<T>(err: T) -> String

@@ -17,7 +17,6 @@ use celo_light_client::{
 };
 use serde::{Deserialize, Serialize};
 use num::cast::ToPrimitive;
-use prost::Message as ProstMessage;
 use prost_types::Any;
 use std::error::Error;
 
